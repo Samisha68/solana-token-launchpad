@@ -1,26 +1,70 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
+@layer base {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --color-primary: #3b82f6;
+    --color-primary-foreground: #ffffff;
+    --color-secondary: #f1f5f9;
+    --color-secondary-foreground: #0f172a;
+    --color-accent: #f8fafc;
+    --color-accent-foreground: #0f172a;
+    --color-muted: #f1f5f9;
+    --color-muted-foreground: #64748b;
+    --color-border: #e2e8f0;
+    --color-background: #ffffff;
+    --color-foreground: #0f172a;
+    --color-card: #ffffff;
+    --color-card-foreground: #0f172a;
+  }
+  
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  .card {
+    background-color: var(--color-card);
+    border: 1px solid var(--color-border);
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+  }
+  
+  .btn-primary {
+    background-color: var(--color-primary);
+    color: var(--color-primary-foreground);
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+  
+  .btn-primary:hover {
+    background-color: rgb(59 130 246 / 0.9);
+  }
+}
+
+/* Wallet adapter styling */
+.wallet-adapter-button {
+  background-color: var(--color-primary) !important;
+  color: var(--color-primary-foreground) !important;
+  font-weight: 500 !important;
+  border-radius: 0.5rem !important;
+  border: none !important;
+  transition: all 0.2s !important;
+}
+
+.wallet-adapter-button:not([disabled]):hover {
+  background-color: rgb(59 130 246 / 0.9) !important;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1) !important;
+}
+
+.wallet-adapter-modal {
+  background-color: var(--color-background) !important;
+}
+
+.wallet-adapter-modal-container {
+  background-color: var(--color-background) !important;
+  border: 1px solid var(--color-border) !important;
+  border-radius: 0.75rem !important;
 }
