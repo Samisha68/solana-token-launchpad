@@ -4,15 +4,18 @@ import React, { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { useWallet } from '@solana/wallet-adapter-react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useTokenStore } from '@/store/useTokenStore'
+import { getTokenSaleService } from '@/services/tokenSaleProgram'
+import { PublicKey } from '@solana/web3.js'
 import { Loader2, Calendar, Shield } from 'lucide-react'
 
 const saleSchema = z.object({
   tokenMint: z.string().min(1, 'Please select a token'),
+  usdcMint: z.string().min(1, 'USDC mint address is required'),
   pricePerToken: z.coerce.number().min(0.001, 'Price must be greater than 0'),
   totalTokens: z.coerce.number().min(1, 'Must sell at least 1 token'),
   startTime: z.string().min(1, 'Start time is required'),
@@ -26,6 +29,7 @@ const saleSchema = z.object({
 
 type SaleFormData = {
   tokenMint: string
+  usdcMint: string
   pricePerToken: number
   totalTokens: number
   startTime: string
@@ -39,6 +43,8 @@ type SaleFormData = {
 
 export const CreateTokenSaleForm: React.FC = () => {
   const { publicKey, connected } = useWallet()
+  const { connection } = useConnection()
+  const wallet = useWallet()
   const { tokens, addSale } = useTokenStore()
   const [isCreating, setIsCreating] = useState(false)
 
@@ -52,6 +58,7 @@ export const CreateTokenSaleForm: React.FC = () => {
     resolver: zodResolver(saleSchema),
     defaultValues: {
       tokenMint: '',
+      usdcMint: 'Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr', // USDC devnet mint
       pricePerToken: 0,
       totalTokens: 0,
       startTime: '',
@@ -76,8 +83,26 @@ export const CreateTokenSaleForm: React.FC = () => {
         throw new Error('Selected token not found')
       }
 
+      const tokenSaleService = getTokenSaleService(connection)
+      
+      // Convert dates to Unix timestamps
+      const startTime = Math.floor(new Date(data.startTime).getTime() / 1000)
+      const endTime = Math.floor(new Date(data.endTime).getTime() / 1000)
+      
+      // Create the token sale on-chain
+      const { saleAccount, signature } = await tokenSaleService.createTokenSale(
+        wallet,
+        new PublicKey(data.tokenMint),
+        new PublicKey(data.usdcMint),
+        startTime,
+        endTime,
+        data.pricePerToken,
+        data.totalTokens
+      )
+
+      // Add to local store for UI
       const newSale = {
-        id: `sale_${Date.now()}`,
+        id: saleAccount.toString(),
         tokenMint: selectedToken.mint,
         pricePerToken: data.pricePerToken,
         totalTokens: data.totalTokens,
@@ -94,10 +119,10 @@ export const CreateTokenSaleForm: React.FC = () => {
 
       addSale(newSale)
       reset()
-      alert('Token sale created successfully!')
+      alert(`Token sale created successfully! Transaction: ${signature}`)
     } catch (error) {
       console.error('Failed to create token sale:', error)
-      alert('Failed to create token sale. Please try again.')
+      alert(`Failed to create token sale: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsCreating(false)
     }
@@ -162,6 +187,20 @@ export const CreateTokenSaleForm: React.FC = () => {
             )}
           </div>
 
+          <div className="space-y-2">
+            <label htmlFor="usdcMint" className="text-sm font-medium">
+              USDC Mint Address *
+            </label>
+            <Input
+              id="usdcMint"
+              placeholder="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+              {...register('usdcMint')}
+            />
+            {errors.usdcMint && (
+              <p className="text-sm text-destructive">{errors.usdcMint.message}</p>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <label htmlFor="pricePerToken" className="text-sm font-medium">
@@ -199,7 +238,7 @@ export const CreateTokenSaleForm: React.FC = () => {
             <div className="space-y-2">
               <label htmlFor="startTime" className="text-sm font-medium flex items-center gap-2">
                 <Calendar className="h-4 w-4" />
-                Sale Start Time *
+                Start Time *
               </label>
               <Input
                 id="startTime"
@@ -214,7 +253,7 @@ export const CreateTokenSaleForm: React.FC = () => {
             <div className="space-y-2">
               <label htmlFor="endTime" className="text-sm font-medium flex items-center gap-2">
                 <Calendar className="h-4 w-4" />
-                Sale End Time *
+                End Time *
               </label>
               <Input
                 id="endTime"
@@ -247,7 +286,7 @@ export const CreateTokenSaleForm: React.FC = () => {
               <Input
                 id="minPurchase"
                 type="number"
-                placeholder="10"
+                placeholder="1"
                 {...register('minPurchase')}
               />
             </div>
@@ -275,46 +314,28 @@ export const CreateTokenSaleForm: React.FC = () => {
               />
               <label htmlFor="requiresVerification" className="text-sm font-medium flex items-center gap-2">
                 <Shield className="h-4 w-4" />
-                Require Identity Verification
+                Require Verification
               </label>
             </div>
 
             {requiresVerification && (
-              <div className="space-y-2 ml-6">
-                <label className="text-sm font-medium">Verification Method</label>
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <input
-                      id="reclaim"
-                      type="radio"
-                      value="reclaim"
-                      {...register('verificationMethod')}
-                    />
-                    <label htmlFor="reclaim" className="text-sm">
-                      Reclaim Protocol (Social media, GitHub, etc.)
-                    </label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      id="solana-attestation"
-                      type="radio"
-                      value="solana-attestation"
-                      {...register('verificationMethod')}
-                    />
-                    <label htmlFor="solana-attestation" className="text-sm">
-                      Solana Attestations
-                    </label>
-                  </div>
-                </div>
+              <div className="space-y-2">
+                <label htmlFor="verificationMethod" className="text-sm font-medium">
+                  Verification Method
+                </label>
+                <select
+                  id="verificationMethod"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  {...register('verificationMethod')}
+                >
+                  <option value="reclaim">Reclaim Protocol</option>
+                  <option value="solana-attestation">Solana Attestation</option>
+                </select>
               </div>
             )}
           </div>
 
-          <Button
-            type="submit"
-            disabled={isCreating}
-            className="w-full"
-          >
+          <Button type="submit" disabled={isCreating} className="w-full">
             {isCreating ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

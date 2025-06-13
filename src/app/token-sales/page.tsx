@@ -1,29 +1,122 @@
 'use client'
 
-import React, { useState } from 'react'
-import { useWallet } from '@solana/wallet-adapter-react'
+import React, { useState, useEffect } from 'react'
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CreateTokenSaleForm } from '@/components/CreateTokenSaleForm'
 import { useTokenStore } from '@/store/useTokenStore'
+import { getTokenSaleService, TokenSaleData } from '@/services/tokenSaleProgram'
 import { formatDate } from '@/lib/utils'
-import { ShoppingCart, Plus, Clock, Shield, TrendingUp } from 'lucide-react'
+import { ShoppingCart, Plus, Clock, Shield, TrendingUp, Loader2, AlertTriangle } from 'lucide-react'
+import { PublicKey } from '@solana/web3.js'
+import { getAttestationService } from '@/services/attestationService'
+
+interface OnChainSale {
+  account: PublicKey;
+  data: TokenSaleData;
+}
 
 export default function TokenSalesPage() {
   const { connected } = useWallet()
+  const { connection } = useConnection()
+  const wallet = useWallet()
   const { tokens, sales } = useTokenStore()
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [purchaseAmount, setPurchaseAmount] = useState<{ [saleId: string]: string }>({})
+  const [onChainSales, setOnChainSales] = useState<OnChainSale[]>([])
+  const [loading, setLoading] = useState(false)
+  const [purchasing, setPurchasing] = useState<{ [saleId: string]: boolean }>({})
+  const [verificationStatus, setVerificationStatus] = useState<{ [saleId: string]: any }>({})
 
-  const activeSales = sales.filter(sale => sale.isActive)
+  // Fetch on-chain sales data
+  useEffect(() => {
+    if (connected) {
+      fetchOnChainSales()
+      checkVerificationStatus()
+    }
+  }, [connected])
 
-  const handlePurchase = async (saleId: string) => {
-    const amount = purchaseAmount[saleId]
-    if (!amount) return
+  const checkVerificationStatus = async () => {
+    if (!connected || !wallet.publicKey) return
     
-    // In a real implementation, this would interact with the Solana program
-    alert(`Purchase functionality would be implemented here for ${amount} tokens`)
+    try {
+      const attestationService = getAttestationService(connection)
+      const eligibility = await attestationService.checkTokenSaleEligibility(
+        wallet.publicKey,
+        {
+          requireKYC: true,
+          requireCompliance: true,
+          minKYCLevel: 'enhanced',
+          allowedJurisdictions: ['US', 'EU', 'UK'],
+          requireAccreditedInvestor: true,
+        }
+      )
+      
+      // Set verification status for all sales
+      const statusMap: { [saleId: string]: any } = {}
+      onChainSales.forEach(sale => {
+        statusMap[sale.account.toString()] = eligibility
+      })
+      setVerificationStatus(statusMap)
+    } catch (error) {
+      console.error('Failed to check verification status:', error)
+    }
+  }
+
+  const fetchOnChainSales = async () => {
+    if (!connected) return
+    
+    setLoading(true)
+    try {
+      const tokenSaleService = getTokenSaleService(connection)
+      await tokenSaleService.initializeProgram(wallet)
+      const sales = await tokenSaleService.getAllSales()
+      setOnChainSales(sales)
+    } catch (error) {
+      console.error('Failed to fetch on-chain sales:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handlePurchase = async (saleAccount: PublicKey, tokenMint: PublicKey) => {
+    const saleId = saleAccount.toString()
+    const amount = purchaseAmount[saleId]
+    if (!amount || !connected) return
+    
+    setPurchasing(prev => ({ ...prev, [saleId]: true }))
+    try {
+      const tokenSaleService = getTokenSaleService(connection)
+      
+      // Create token account if needed
+      await tokenSaleService.createTokenAccountIfNeeded(
+        wallet,
+        tokenMint,
+        wallet.publicKey!
+      )
+      
+      const signature = await tokenSaleService.buyTokens(
+        wallet,
+        saleAccount,
+        tokenMint,
+        parseInt(amount)
+      )
+      
+      alert(`Purchase successful! Transaction: ${signature}`)
+      
+      // Refresh sales data
+      await fetchOnChainSales()
+      
+      // Clear purchase amount
+      setPurchaseAmount(prev => ({ ...prev, [saleId]: '' }))
+    } catch (error) {
+      console.error('Purchase failed:', error)
+      alert(`Purchase failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    } finally {
+      setPurchasing(prev => ({ ...prev, [saleId]: false }))
+    }
   }
 
   if (!connected) {
@@ -54,6 +147,11 @@ export default function TokenSalesPage() {
     )
   }
 
+  const activeSales = onChainSales.filter(sale => {
+    const now = Date.now() / 1000
+    return sale.data.startTime.toNumber() <= now && sale.data.endTime.toNumber() >= now
+  })
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -64,10 +162,15 @@ export default function TokenSalesPage() {
             Discover and participate in token sales with verification requirements
           </p>
         </div>
-        <Button onClick={() => setShowCreateForm(true)} className="flex items-center gap-2">
-          <Plus className="h-4 w-4" />
-          Create Sale
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={fetchOnChainSales} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Refresh'}
+          </Button>
+          <Button onClick={() => setShowCreateForm(true)} className="flex items-center gap-2">
+            <Plus className="h-4 w-4" />
+            Create Sale
+          </Button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -90,7 +193,9 @@ export default function TokenSalesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              ${activeSales.reduce((sum, sale) => sum + (sale.soldTokens * sale.pricePerToken), 0).toFixed(2)}
+              ${activeSales.reduce((sum, sale) => 
+                sum + (sale.data.totalSold.toNumber() * sale.data.pricePerToken.toNumber() / 1_000_000), 0
+              ).toFixed(2)}
             </div>
             <p className="text-xs text-muted-foreground">USDC traded</p>
           </CardContent>
@@ -98,27 +203,35 @@ export default function TokenSalesPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Verified Sales</CardTitle>
+            <CardTitle className="text-sm font-medium">Total Sales</CardTitle>
             <Shield className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              {activeSales.filter(sale => sale.requiresVerification).length}
-            </div>
-            <p className="text-xs text-muted-foreground">Require verification</p>
+            <div className="text-2xl font-bold">{onChainSales.length}</div>
+            <p className="text-xs text-muted-foreground">All time</p>
           </CardContent>
         </Card>
       </div>
 
       {/* Sales List */}
       <div className="space-y-4">
-        {activeSales.length === 0 ? (
+        {loading ? (
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-12">
+              <Loader2 className="h-12 w-12 animate-spin text-muted-foreground mb-4" />
+              <h3 className="text-lg font-semibold mb-2">Loading Sales...</h3>
+              <p className="text-muted-foreground text-center">
+                Fetching token sales from the blockchain
+              </p>
+            </CardContent>
+          </Card>
+        ) : onChainSales.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-12">
               <ShoppingCart className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">No Active Sales</h3>
+              <h3 className="text-lg font-semibold mb-2">No Sales Found</h3>
               <p className="text-muted-foreground text-center mb-4">
-                There are currently no active token sales. Create the first one!
+                There are currently no token sales. Create the first one!
               </p>
               <Button onClick={() => setShowCreateForm(true)}>
                 Create Token Sale
@@ -126,31 +239,40 @@ export default function TokenSalesPage() {
             </CardContent>
           </Card>
         ) : (
-          activeSales.map((sale) => {
-            const token = tokens.find(t => t.mint.equals(sale.tokenMint))
-            const progress = (sale.soldTokens / sale.totalTokens) * 100
-            const timeLeft = sale.endTime.getTime() - Date.now()
-            const isEnded = timeLeft <= 0
+          onChainSales.map((sale) => {
+            const saleId = sale.account.toString()
+            const token = tokens.find(t => t.mint.equals(sale.data.tokenMint))
+            const progress = (sale.data.totalSold.toNumber() / sale.data.hardCap.toNumber()) * 100
+            const startTime = new Date(sale.data.startTime.toNumber() * 1000)
+            const endTime = new Date(sale.data.endTime.toNumber() * 1000)
+            const now = Date.now()
+            const isActive = startTime.getTime() <= now && endTime.getTime() >= now
+            const isEnded = endTime.getTime() <= now
+            const priceInUsdc = sale.data.pricePerToken.toNumber() / 1_000_000
             
             return (
-              <Card key={sale.id}>
+              <Card key={saleId}>
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <div className="space-y-1">
                       <CardTitle className="flex items-center gap-2">
                         {token?.name || 'Unknown Token'}
-                        {sale.requiresVerification && (
-                          <Shield className="h-4 w-4 text-blue-500" />
-                        )}
+                        <span className={`px-2 py-1 text-xs rounded-full ${
+                          isActive ? 'bg-green-100 text-green-800' : 
+                          isEnded ? 'bg-red-100 text-red-800' : 
+                          'bg-yellow-100 text-yellow-800'
+                        }`}>
+                          {isActive ? 'Active' : isEnded ? 'Ended' : 'Upcoming'}
+                        </span>
                       </CardTitle>
                       <CardDescription>
-                        {token?.symbol} • ${sale.pricePerToken} per token
+                        {token?.symbol} • ${priceInUsdc.toFixed(6)} per token
                       </CardDescription>
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-medium">{progress.toFixed(1)}% sold</p>
                       <p className="text-xs text-muted-foreground">
-                        {sale.soldTokens.toLocaleString()} / {sale.totalTokens.toLocaleString()}
+                        {sale.data.totalSold.toNumber().toLocaleString()} / {sale.data.hardCap.toNumber().toLocaleString()}
                       </p>
                     </div>
                   </div>
@@ -170,88 +292,97 @@ export default function TokenSalesPage() {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div>
                       <p className="text-muted-foreground">Start Time</p>
-                      <p className="font-medium">{formatDate(sale.startTime)}</p>
+                      <p className="font-medium">{formatDate(startTime)}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">End Time</p>
-                      <p className="font-medium">{formatDate(sale.endTime)}</p>
+                      <p className="font-medium">{formatDate(endTime)}</p>
                     </div>
-                    {sale.minPurchase && (
-                      <div>
-                        <p className="text-muted-foreground">Min Purchase</p>
-                        <p className="font-medium">{sale.minPurchase} tokens</p>
-                      </div>
-                    )}
-                    {sale.maxPurchase && (
-                      <div>
-                        <p className="text-muted-foreground">Max Purchase</p>
-                        <p className="font-medium">{sale.maxPurchase} tokens</p>
-                      </div>
-                    )}
+                    <div>
+                      <p className="text-muted-foreground">Authority</p>
+                      <p className="font-medium text-xs">{sale.data.authority.toString().slice(0, 8)}...</p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground">Sale Account</p>
+                      <p className="font-medium text-xs">{saleId.slice(0, 8)}...</p>
+                    </div>
                   </div>
 
-                  {/* Verification Requirements */}
-                  {sale.requiresVerification && (
-                    <div className="p-3 bg-blue-50 dark:bg-blue-950 rounded-lg">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Shield className="h-4 w-4 text-blue-500" />
-                        <span className="text-sm font-medium text-blue-700 dark:text-blue-300">
-                          Verification Required
+                  {/* Verification Status */}
+                  {verificationStatus[saleId] && (
+                    <div className={`p-3 rounded-lg border ${
+                      verificationStatus[saleId].eligible 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-red-50 border-red-200'
+                    }`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        {verificationStatus[saleId].eligible ? (
+                          <Shield className="h-4 w-4 text-green-600" />
+                        ) : (
+                          <AlertTriangle className="h-4 w-4 text-red-600" />
+                        )}
+                        <span className={`text-sm font-medium ${
+                          verificationStatus[saleId].eligible ? 'text-green-800' : 'text-red-800'
+                        }`}>
+                          {verificationStatus[saleId].eligible ? 'Verification Passed' : 'Verification Required'}
                         </span>
                       </div>
-                      <p className="text-xs text-blue-600 dark:text-blue-400">
-                        This sale requires {sale.verificationMethod === 'reclaim' ? 'Reclaim Protocol' : 'Solana Attestation'} verification
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Vesting Information */}
-                  {sale.vestingPeriod && (
-                    <div className="p-3 bg-yellow-50 dark:bg-yellow-950 rounded-lg">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Clock className="h-4 w-4 text-yellow-500" />
-                        <span className="text-sm font-medium text-yellow-700 dark:text-yellow-300">
-                          Vesting Period
-                        </span>
-                      </div>
-                      <p className="text-xs text-yellow-600 dark:text-yellow-400">
-                        Tokens will be vested over {sale.vestingPeriod} days
-                      </p>
+                      {!verificationStatus[saleId].eligible && verificationStatus[saleId].reasons && (
+                        <ul className="text-xs text-red-700 space-y-1">
+                          {verificationStatus[saleId].reasons.map((reason: string, idx: number) => (
+                            <li key={idx}>• {reason}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {!verificationStatus[saleId].eligible && (
+                        <div className="mt-2">
+                          <Button 
+                            variant="outline" 
+                            size="sm" 
+                            onClick={() => window.open('/verify', '_blank')}
+                            className="text-xs"
+                          >
+                            Complete Verification
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   )}
 
                   {/* Purchase Section */}
-                  {!isEnded && progress < 100 && (
-                    <div className="flex gap-2">
-                      <Input
-                        type="number"
-                        placeholder="Amount to purchase"
-                        value={purchaseAmount[sale.id] || ''}
-                        onChange={(e) => setPurchaseAmount(prev => ({
-                          ...prev,
-                          [sale.id]: e.target.value
-                        }))}
-                        min={sale.minPurchase || 1}
-                        max={sale.maxPurchase || sale.totalTokens - sale.soldTokens}
-                      />
+                  {isActive && (
+                    <div className="flex gap-2 items-end">
+                      <div className="flex-1">
+                        <label className="text-sm font-medium">Amount to Purchase</label>
+                        <Input
+                          type="number"
+                          placeholder="100"
+                          value={purchaseAmount[saleId] || ''}
+                          onChange={(e) => setPurchaseAmount(prev => ({ 
+                            ...prev, 
+                            [saleId]: e.target.value 
+                          }))}
+                        />
+                      </div>
                       <Button 
-                        onClick={() => handlePurchase(sale.id)}
-                        disabled={!purchaseAmount[sale.id] || parseFloat(purchaseAmount[sale.id]) <= 0}
+                        onClick={() => handlePurchase(sale.account, sale.data.tokenMint)}
+                        disabled={
+                          !purchaseAmount[saleId] || 
+                          purchasing[saleId] || 
+                          (verificationStatus[saleId] && !verificationStatus[saleId].eligible)
+                        }
                       >
-                        Purchase
+                        {purchasing[saleId] ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Buying...
+                          </>
+                        ) : verificationStatus[saleId] && !verificationStatus[saleId].eligible ? (
+                          'Verification Required'
+                        ) : (
+                          'Buy Tokens'
+                        )}
                       </Button>
-                    </div>
-                  )}
-
-                  {isEnded && (
-                    <div className="text-center py-2">
-                      <p className="text-muted-foreground">This sale has ended</p>
-                    </div>
-                  )}
-
-                  {progress >= 100 && (
-                    <div className="text-center py-2">
-                      <p className="text-green-600 font-medium">Sale completed!</p>
                     </div>
                   )}
                 </CardContent>

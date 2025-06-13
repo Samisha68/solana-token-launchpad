@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { WalletButton } from './WalletButton'
 import { cn } from '@/lib/utils'
-import { Coins, ShoppingCart, Gift, Plus } from 'lucide-react'
+import { Coins, ShoppingCart, Gift, Plus, Shield } from 'lucide-react'
 
 const navItems = [
   {
@@ -22,6 +22,11 @@ const navItems = [
     href: '/token-sales',
     label: 'Token Sales',
     icon: ShoppingCart,
+  },
+  {
+    href: '/verify',
+    label: 'Verify Identity',
+    icon: Shield,
   },
   {
     href: '/distributions',
