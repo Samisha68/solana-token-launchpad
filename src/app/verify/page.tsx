@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useConnection, useWallet } from '@solana/wallet-adapter-react'
 import { PublicKey } from '@solana/web3.js'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -8,10 +8,16 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Separator } from '@/components/ui/separator'
 import { CheckCircle, XCircle, Shield, User, AlertTriangle, Clock } from 'lucide-react'
 import { getAttestationService, KYCAttestation, ComplianceAttestation, AttestationData } from '@/services/attestationService'
 import { AttestationIssuer } from '@/components/AttestationIssuer'
+
+interface EligibilityCheck {
+  eligible: boolean;
+  reasons: string[];
+  kycStatus?: KYCAttestation;
+  complianceStatus?: ComplianceAttestation;
+}
 
 export default function VerifyPage() {
   const { connection } = useConnection()
@@ -21,19 +27,11 @@ export default function VerifyPage() {
   const [kycStatus, setKycStatus] = useState<KYCAttestation | null>(null)
   const [complianceStatus, setComplianceStatus] = useState<ComplianceAttestation | null>(null)
   const [allAttestations, setAllAttestations] = useState<AttestationData[]>([])
-  const [eligibilityCheck, setEligibilityCheck] = useState<any>(null)
+  const [eligibilityCheck, setEligibilityCheck] = useState<EligibilityCheck | null>(null)
 
   const attestationService = getAttestationService(connection)
 
-  // Auto-verify connected wallet
-  useEffect(() => {
-    if (wallet.connected && wallet.publicKey) {
-      setVerificationAddress(wallet.publicKey.toString())
-      handleVerification(wallet.publicKey.toString())
-    }
-  }, [wallet.connected, wallet.publicKey])
-
-  const handleVerification = async (address?: string) => {
+  const handleVerification = useCallback(async (address?: string) => {
     const targetAddress = address || verificationAddress
     if (!targetAddress) return
 
@@ -64,7 +62,15 @@ export default function VerifyPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [verificationAddress, attestationService])
+
+  // Auto-verify connected wallet
+  useEffect(() => {
+    if (wallet.connected && wallet.publicKey) {
+      setVerificationAddress(wallet.publicKey.toString())
+      handleVerification(wallet.publicKey.toString())
+    }
+  }, [wallet.connected, wallet.publicKey, handleVerification])
 
   const getStatusIcon = (status: boolean) => {
     return status ? (

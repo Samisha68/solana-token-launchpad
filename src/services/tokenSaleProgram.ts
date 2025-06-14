@@ -1,17 +1,24 @@
 import * as anchor from "@coral-xyz/anchor";
+import { Connection, PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
 import { Program } from "@coral-xyz/anchor";
 import { TokenSaleProgram } from "../types/token_sale_program";
 import {
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccount,
   getAccount,
   getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { Connection, PublicKey } from "@solana/web3.js";
 
-// Program ID deployed on devnet
+// Define wallet interface
+interface WalletAdapter {
+  publicKey: PublicKey | null;
+  signTransaction: (transaction: any) => Promise<any>;
+  signAllTransactions: (transactions: any[]) => Promise<any[]>;
+}
+
 const PROGRAM_ID = new PublicKey("3ddS5rTMztd7w2TBh8rnCPt1vMu5rqEp8XrJCYuqH1ZL");
+const USDC_MINT = new PublicKey("Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"); // Devnet USDC
 
 export interface TokenSaleData {
   authority: PublicKey;
@@ -34,24 +41,26 @@ export class TokenSaleProgramService {
     this.connection = connection;
   }
 
-  async initializeProgram(wallet: any) {
+  async initializeProgram(wallet: WalletAdapter) {
     const provider = new anchor.AnchorProvider(
       this.connection,
-      wallet,
+      wallet as anchor.Wallet,
       anchor.AnchorProvider.defaultOptions()
     );
     
-    // Use the workspace to get the program
-    this.program = anchor.workspace.TokenSaleProgram as Program<TokenSaleProgram>;
-    if (!this.program) {
-      throw new Error("Program not found in workspace");
+    // Create program instance directly with IDL
+    const idl = await anchor.Program.fetchIdl(PROGRAM_ID, provider);
+    if (!idl) {
+      throw new Error("IDL not found");
     }
+    
+    this.program = new anchor.Program(idl, provider) as Program<TokenSaleProgram>;
     
     return this.program;
   }
 
   async createTokenSale(
-    wallet: any,
+    wallet: WalletAdapter,
     tokenMint: PublicKey,
     usdcMint: PublicKey,
     startTime: number,
@@ -59,34 +68,39 @@ export class TokenSaleProgramService {
     pricePerToken: number,
     hardCap: number
   ): Promise<{ saleAccount: PublicKey; signature: string }> {
-    if (!this.program) {
-      await this.initializeProgram(wallet);
+    if (!this.program || !wallet.publicKey) {
+      throw new Error("Program not initialized or wallet not connected");
     }
 
-    // Find PDA for sale account
-    const [saleAccount] = await PublicKey.findProgramAddress(
+    // Find PDA for the sale account
+    const [saleAccount] = PublicKey.findProgramAddressSync(
       [Buffer.from("token_sale"), tokenMint.toBuffer()],
       PROGRAM_ID
     );
 
-    // Compute treasury address
+    // Find treasury PDA - using authority and USDC mint
     const treasury = await getAssociatedTokenAddress(
       usdcMint,
       wallet.publicKey
     );
 
-    const signature = await this.program!.methods
+    const signature = await this.program.methods
       .initializeSale(
         new anchor.BN(startTime),
         new anchor.BN(endTime),
-        new anchor.BN(pricePerToken * 1_000_000), // Convert to micro USDC
+        new anchor.BN(pricePerToken * 1_000_000), // Convert to micro-USDC
         new anchor.BN(hardCap)
       )
       .accountsPartial({
         authority: wallet.publicKey,
+        sale: saleAccount,
         tokenMint,
         usdcMint,
         treasury,
+        systemProgram: SystemProgram.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        rent: SYSVAR_RENT_PUBKEY,
       })
       .rpc();
 
@@ -94,30 +108,31 @@ export class TokenSaleProgramService {
   }
 
   async buyTokens(
-    wallet: any,
+    wallet: WalletAdapter,
     saleAccount: PublicKey,
     tokenMint: PublicKey,
     amount: number
   ): Promise<string> {
-    if (!this.program) {
-      await this.initializeProgram(wallet);
+    if (!this.program || !wallet.publicKey) {
+      throw new Error("Program not initialized or wallet not connected");
     }
 
-    // Get sale data to find USDC mint and treasury
-    const saleData = await this.program!.account.tokenSale.fetch(saleAccount);
+    // Get sale data to find treasury and authority
+    const saleData = await this.getSaleData(saleAccount);
     
-    // Get buyer's token accounts
-    const buyerTokenAccount = await getAssociatedTokenAddress(
-      tokenMint,
-      wallet.publicKey
-    );
-    
+    // Get buyer's USDC token account
     const buyerUsdcAccount = await getAssociatedTokenAddress(
       saleData.usdcMint,
       wallet.publicKey
     );
 
-    const signature = await this.program!.methods
+    // Get buyer's token account (for receiving tokens)
+    const buyerTokenAccount = await getAssociatedTokenAddress(
+      tokenMint,
+      wallet.publicKey
+    );
+
+    const signature = await this.program.methods
       .buyTokens(new anchor.BN(amount))
       .accountsPartial({
         buyer: wallet.publicKey,
@@ -127,93 +142,76 @@ export class TokenSaleProgramService {
         buyerUsdcAccount,
         treasury: saleData.treasury,
         authority: saleData.authority,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       })
       .rpc();
 
     return signature;
   }
 
-  async getSaleData(saleAccount: PublicKey): Promise<TokenSaleData | null> {
+  async getSaleData(saleAccount: PublicKey): Promise<TokenSaleData> {
     if (!this.program) {
       throw new Error("Program not initialized");
     }
 
-    try {
-      const saleData = await this.program.account.tokenSale.fetch(saleAccount);
-      return saleData as TokenSaleData;
-    } catch (error) {
-      console.error("Failed to fetch sale data:", error);
-      return null;
-    }
+    const accountData = await this.program.account.tokenSale.fetch(saleAccount);
+    return accountData as TokenSaleData;
   }
 
-  async getAllSales(): Promise<Array<{ account: PublicKey; data: TokenSaleData }>> {
+  async getAllSales(): Promise<{ account: PublicKey; data: TokenSaleData }[]> {
     if (!this.program) {
       throw new Error("Program not initialized");
     }
 
-    try {
-      const sales = await this.program.account.tokenSale.all();
-      return sales.map(sale => ({
-        account: sale.publicKey,
-        data: sale.account as TokenSaleData
-      }));
-    } catch (error) {
-      console.error("Failed to fetch all sales:", error);
-      return [];
-    }
+    const sales = await this.program.account.tokenSale.all();
+    return sales.map(sale => ({
+      account: sale.publicKey,
+      data: sale.account as TokenSaleData
+    }));
   }
 
   async findSaleAccount(tokenMint: PublicKey): Promise<PublicKey> {
-    const [saleAccount] = await PublicKey.findProgramAddress(
+    const [saleAccount] = PublicKey.findProgramAddressSync(
       [Buffer.from("token_sale"), tokenMint.toBuffer()],
       PROGRAM_ID
     );
     return saleAccount;
   }
 
-  async getUserTokenBalance(
-    userPublicKey: PublicKey,
-    tokenMint: PublicKey
-  ): Promise<number> {
-    try {
-      const tokenAccount = await getAssociatedTokenAddress(tokenMint, userPublicKey);
-      const balance = await this.connection.getTokenAccountBalance(tokenAccount);
-      return parseInt(balance.value.amount);
-    } catch {
-      return 0;
-    }
-  }
-
   async createTokenAccountIfNeeded(
-    wallet: any,
+    wallet: WalletAdapter,
     tokenMint: PublicKey,
     owner: PublicKey
   ): Promise<PublicKey> {
-    const tokenAccount = await getAssociatedTokenAddress(tokenMint, owner);
-    
+    const associatedTokenAccount = await getAssociatedTokenAddress(
+      tokenMint,
+      owner
+    );
+
     try {
-      await getAccount(this.connection, tokenAccount);
-      return tokenAccount;
-    } catch {
+      // Try to get the account
+      await getAccount(this.connection, associatedTokenAccount);
+      return associatedTokenAccount;
+    } catch (error) {
       // Account doesn't exist, create it
       await createAssociatedTokenAccount(
         this.connection,
-        wallet.payer || wallet,
+        wallet as any, // This is the only remaining 'any' but it's from the SPL library
         tokenMint,
         owner
       );
-      return tokenAccount;
+      return associatedTokenAccount;
     }
   }
 }
 
-// Singleton instance
-let tokenSaleService: TokenSaleProgramService | null = null;
+// Singleton service
+let tokenSaleServiceInstance: TokenSaleProgramService | null = null;
 
 export const getTokenSaleService = (connection: Connection): TokenSaleProgramService => {
-  if (!tokenSaleService) {
-    tokenSaleService = new TokenSaleProgramService(connection);
+  if (!tokenSaleServiceInstance) {
+    tokenSaleServiceInstance = new TokenSaleProgramService(connection);
   }
-  return tokenSaleService;
+  return tokenSaleServiceInstance;
 }; 

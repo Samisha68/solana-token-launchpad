@@ -8,6 +8,12 @@ export interface OnChainSale {
   data: TokenSaleData;
 }
 
+type WalletType = {
+  publicKey: PublicKey | null;
+  signTransaction: any;
+  signAllTransactions: any;
+}
+
 export const useTokenSaleProgram = () => {
   const { connection } = useConnection()
   const wallet = useWallet()
@@ -23,7 +29,7 @@ export const useTokenSaleProgram = () => {
     setLoading(true)
     setError(null)
     try {
-      await tokenSaleService.initializeProgram(wallet)
+      await tokenSaleService.initializeProgram(wallet as WalletType)
       const salesData = await tokenSaleService.getAllSales()
       setSales(salesData)
     } catch (err) {
@@ -32,7 +38,7 @@ export const useTokenSaleProgram = () => {
     } finally {
       setLoading(false)
     }
-  }, [wallet.connected, tokenSaleService])
+  }, [wallet, tokenSaleService])
 
   const createSale = useCallback(async (
     tokenMint: PublicKey,
@@ -45,7 +51,7 @@ export const useTokenSaleProgram = () => {
     if (!wallet.connected) throw new Error('Wallet not connected')
 
     const result = await tokenSaleService.createTokenSale(
-      wallet,
+      wallet as WalletType,
       tokenMint,
       usdcMint,
       startTime,
@@ -69,13 +75,13 @@ export const useTokenSaleProgram = () => {
 
     // Create token account if needed
     await tokenSaleService.createTokenAccountIfNeeded(
-      wallet,
+      wallet as WalletType,
       tokenMint,
       wallet.publicKey!
     )
 
     const signature = await tokenSaleService.buyTokens(
-      wallet,
+      wallet as WalletType,
       saleAccount,
       tokenMint,
       amount

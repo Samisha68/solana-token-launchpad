@@ -1,17 +1,11 @@
 import { Connection, PublicKey } from '@solana/web3.js';
-import {
-  getCreateAttestationInstruction,
-  fetchAttestation,
-  fetchAllAttestation,
-  getCreateSchemaInstruction,
-  fetchSchema,
-} from 'sas-lib';
+// SAS imports - currently using mock implementation
 
 export interface AttestationData {
   issuer: PublicKey;
   subject: PublicKey;
   schema: string;
-  data: any;
+  data: Record<string, unknown>;
   timestamp: number;
   signature: string;
 }
@@ -44,7 +38,7 @@ export class AttestationService {
    * Issue a KYC attestation for a user
    */
   async issueKYCAttestation(
-    issuerWallet: any,
+    issuerWallet: { publicKey: PublicKey },
     subject: PublicKey,
     kycData: KYCAttestation
   ): Promise<string> {
@@ -73,7 +67,7 @@ export class AttestationService {
    * Issue a compliance attestation
    */
   async issueComplianceAttestation(
-    issuerWallet: any,
+    issuerWallet: { publicKey: PublicKey },
     subject: PublicKey,
     complianceData: ComplianceAttestation
   ): Promise<string> {
@@ -101,7 +95,7 @@ export class AttestationService {
   async verifyKYCStatus(userPublicKey: PublicKey): Promise<KYCAttestation | null> {
     try {
       // For demo purposes, return mock data for specific test addresses
-      // In reality, you'd fetch from the SAS program
+      // In reality, you'd fetch from the SAS program using userPublicKey
       const mockKYCData: KYCAttestation = {
         isVerified: true,
         level: 'enhanced',
@@ -124,7 +118,7 @@ export class AttestationService {
    */
   async verifyComplianceStatus(userPublicKey: PublicKey): Promise<ComplianceAttestation | null> {
     try {
-      // Mock compliance data for demo
+      // Mock compliance data for demo - in production this would use userPublicKey to fetch real data
       const mockComplianceData: ComplianceAttestation = {
         sanctionsCheck: true,
         amlCompliant: true,

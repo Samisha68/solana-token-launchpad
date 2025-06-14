@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useWallet, useConnection } from '@solana/wallet-adapter-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,7 @@ import { CreateTokenSaleForm } from '@/components/CreateTokenSaleForm'
 import { useTokenStore } from '@/store/useTokenStore'
 import { getTokenSaleService, TokenSaleData } from '@/services/tokenSaleProgram'
 import { formatDate } from '@/lib/utils'
-import { ShoppingCart, Plus, Clock, Shield, TrendingUp, Loader2, AlertTriangle } from 'lucide-react'
+import { ShoppingCart, Plus, Shield, TrendingUp, Loader2, AlertTriangle } from 'lucide-react'
 import { PublicKey } from '@solana/web3.js'
 import { getAttestationService } from '@/services/attestationService'
 
@@ -18,27 +18,26 @@ interface OnChainSale {
   data: TokenSaleData;
 }
 
+interface VerificationStatus {
+  eligible: boolean;
+  reasons: string[];
+  kycStatus?: unknown;
+  complianceStatus?: unknown;
+}
+
 export default function TokenSalesPage() {
   const { connected } = useWallet()
   const { connection } = useConnection()
   const wallet = useWallet()
-  const { tokens, sales } = useTokenStore()
+  const { tokens } = useTokenStore()
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [purchaseAmount, setPurchaseAmount] = useState<{ [saleId: string]: string }>({})
   const [onChainSales, setOnChainSales] = useState<OnChainSale[]>([])
   const [loading, setLoading] = useState(false)
   const [purchasing, setPurchasing] = useState<{ [saleId: string]: boolean }>({})
-  const [verificationStatus, setVerificationStatus] = useState<{ [saleId: string]: any }>({})
+  const [verificationStatus, setVerificationStatus] = useState<{ [saleId: string]: VerificationStatus }>({})
 
-  // Fetch on-chain sales data
-  useEffect(() => {
-    if (connected) {
-      fetchOnChainSales()
-      checkVerificationStatus()
-    }
-  }, [connected])
-
-  const checkVerificationStatus = async () => {
+  const checkVerificationStatus = useCallback(async () => {
     if (!connected || !wallet.publicKey) return
     
     try {
@@ -55,7 +54,7 @@ export default function TokenSalesPage() {
       )
       
       // Set verification status for all sales
-      const statusMap: { [saleId: string]: any } = {}
+      const statusMap: { [saleId: string]: VerificationStatus } = {}
       onChainSales.forEach(sale => {
         statusMap[sale.account.toString()] = eligibility
       })
@@ -63,15 +62,15 @@ export default function TokenSalesPage() {
     } catch (error) {
       console.error('Failed to check verification status:', error)
     }
-  }
+  }, [connected, wallet.publicKey, connection, onChainSales])
 
-  const fetchOnChainSales = async () => {
+  const fetchOnChainSales = useCallback(async () => {
     if (!connected) return
     
     setLoading(true)
     try {
       const tokenSaleService = getTokenSaleService(connection)
-      await tokenSaleService.initializeProgram(wallet)
+      await tokenSaleService.initializeProgram(wallet as { publicKey: PublicKey | null; signTransaction: any; signAllTransactions: any })
       const sales = await tokenSaleService.getAllSales()
       setOnChainSales(sales)
     } catch (error) {
@@ -79,7 +78,20 @@ export default function TokenSalesPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [connected, connection, wallet])
+
+  // Fetch on-chain sales data
+  useEffect(() => {
+    if (connected) {
+      fetchOnChainSales()
+    }
+  }, [connected, fetchOnChainSales])
+
+  useEffect(() => {
+    if (connected && onChainSales.length > 0) {
+      checkVerificationStatus()
+    }
+  }, [connected, onChainSales.length, checkVerificationStatus])
 
   const handlePurchase = async (saleAccount: PublicKey, tokenMint: PublicKey) => {
     const saleId = saleAccount.toString()
@@ -92,13 +104,13 @@ export default function TokenSalesPage() {
       
       // Create token account if needed
       await tokenSaleService.createTokenAccountIfNeeded(
-        wallet,
+        wallet as { publicKey: PublicKey | null; signTransaction: any; signAllTransactions: any },
         tokenMint,
         wallet.publicKey!
       )
       
       const signature = await tokenSaleService.buyTokens(
-        wallet,
+        wallet as { publicKey: PublicKey | null; signTransaction: any; signAllTransactions: any },
         saleAccount,
         tokenMint,
         parseInt(amount)
